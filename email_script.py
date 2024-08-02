@@ -70,13 +70,13 @@ def send_emails(qualifiedApplicants: List[Tuple], invalidApplicants: List[Tuple]
     html_template = load_html_file('acceptance_email.html')
     
     # Send email to each applicant
-    # for applicant in qualifiedApplicants:
-        # TODO - Change back to applicant email before running as production code
-    send_acceptance(os.environ.get('OUTLOOK_EMAIL'), html_template, outlook)
+    for applicant in qualifiedApplicants:
+        send_acceptance(applicant[0]["GSU Email"], html_template, outlook)
+        print(f'Sent email to: {applicant[0]["GSU Email"]}')
     
     # Send error report if applicable.
-    if len(invalidApplicants) > 0:
-        send_error_report(invalidApplicants, outlook)
+    # if len(invalidApplicants) > 0:
+    #     send_error_report(invalidApplicants, outlook)
 
 
 def main():
@@ -92,8 +92,7 @@ def main():
 
     # Sort all applications by qualification
     for rownum in range(len(data)):
-        print(f"Processing row {rownum}: ")
-        if data[rownum]["Approved?"] == "":
+        if data[rownum]["Reviewed?"] == "":
             # Try-catch block provides input validation for non-numeric inputs for GPA field.
             try:
                 gpa = float(data[rownum]["Current GSU GPA"])
