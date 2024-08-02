@@ -1,0 +1,4 @@
+python-dotenv
+gspread
+oauth2client
+pywin32

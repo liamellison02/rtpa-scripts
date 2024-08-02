@@ -1,14 +1,12 @@
 import os
 import sys
 import json
+from typing import List, Tuple
 
 from dotenv import load_dotenv
 load_dotenv('.env', override=True)
 
-import smtplib
-import email
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
+import win32com.client as win32client
 
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
@@ -19,6 +17,7 @@ def authenticate_google_sheets(json_keyfile_name, scopes):
     client = gspread.authorize(credentials)
     return client
 
+
 def get_sheet_data(client, spreadsheet_name, sheet_name):
     # Open the spreadsheet and select the sheet by name
     sheet = client.open(spreadsheet_name).worksheet(sheet_name)
@@ -26,58 +25,59 @@ def get_sheet_data(client, spreadsheet_name, sheet_name):
     data = sheet.get_all_records(head=1)
     return data
 
-def extract_sheet_data():
-    # Define the scope and the path to the service account key file
-    scopes = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-    json_keyfile_name = "service_account.json"
-
-    # Authenticate and get the client
-    client = authenticate_google_sheets(json_keyfile_name, scopes)
-
-    # Define the spreadsheet and sheet names
-    spreadsheet_name = "RTPA Member Roster"
-    sheet_name = "Form Responses 1"
-
-    # Get the data from the sheet
-    data = get_sheet_data(client, spreadsheet_name, sheet_name)
-
-    # Print the data
-    for row in range(len(data)):
-        print(row)
 
 def load_html_file(file_path: str) -> str:
     with open(file_path, 'r') as file:
         return file.read()
 
-def send_acceptance(applicant_email: str, html_body: str, server: smtplib.SMTP):
+
+def send_acceptance(applicant_email: str, html_body: str, outlook):
     
-    msg = MIMEMultipart()
-    msg['From'] = os.environ.get('OUTLOOK_EMAIL')
-    msg['To'] = applicant_email
-    msg['Subject'] = "Membership Application Update - RTPA"
+    # Create new email message object
+    msg = outlook.CreateItem(0)
+    msg.To = applicant_email
+    msg.Subject = "Membership Application Update - RTPA"
     
-    msg.attach(MIMEText(html_body, 'html'))
-    text = msg.as_string()
+    # Add acceptance HTML template to body
+    msg.HTMLBody = html_body
     
     # Send email
-    server.sendmail(msg)
+    msg.Save()
+    msg.Send()
 
-def sendEmails(email_addresses):
-    # Create email server object
-    server = smtplib.SMTP('smtp.office365.com', 587)
-    server.starttls()
-    server.login(os.environ.get('OUTLOOK_EMAIL'), os.environ.get('OUTLOOK_PASSWORD'))
+
+def send_error_report(invalidApplicants: List[Tuple], outlook):
+
+    # Create new email message object
+    msg = outlook.CreateItem(0)
+    msg.To = os.environ.get('RTPA_EMAIL')
+    msg.Subject = "WARNING: Invalid Applicants found"
+
+    # Add applicants to message body
+    msg.Body = "The following applicant records were flagged as invalid for determining qualification for acceptance. Please review: \n"
+    msg.Body += str(invalidApplicants)
+
+    # Send email
+    msg.Save()
+    msg.Send()
+
+
+
+def send_emails(qualifiedApplicants: List[Tuple], invalidApplicants: List[Tuple], unqualifiedApplicants: List[Tuple]):
+    outlook = win32client.Dispatch("Outlook.Application")
     
     # Load our email HTML template
     html_template = load_html_file('acceptance_email.html')
     
     # Send email to each applicant
-    for applicant in email_addresses:
-        send_acceptance(applicant['email'], html_template, server)
-        print(f"Email sent to {applicant['name']}")
+    # for applicant in qualifiedApplicants:
+        # TODO - Change back to applicant email before running as production code
+    send_acceptance(os.environ.get('OUTLOOK_EMAIL'), html_template, outlook)
     
-    # Close the server connection
-    server.quit()
+    # Send error report if applicable.
+    if len(invalidApplicants) > 0:
+        send_error_report(invalidApplicants, outlook)
+
 
 def main():
     # Define the scope and the path to the service account key file
@@ -88,19 +88,31 @@ def main():
     client = authenticate_google_sheets(json_keyfile_name, scopes)
     data = get_sheet_data(client, "RTPA Member Roster", "Form Responses 1")
     
-    records = []
-    # Print the data
+    qualApps, unqualApps, invalidApps = [], [], [] # arrays for qualified, unqualified, and invalid applications
+
+    # Sort all applications by qualification
+    for rownum in range(len(data)):
+        print(f"Processing row {rownum}: ")
+        if data[rownum]["Approved?"] == "":
+            # Try-catch block provides input validation for non-numeric inputs for GPA field.
+            try:
+                gpa = float(data[rownum]["Current GSU GPA"])
+                if gpa >= 2.0:  # If GPA qualifies, add as qualified applicant
+                    qualApps.append([data[rownum], rownum+2])
+                else:
+                 unqualApps.append([data[rownum], rownum+2])  # Otherwise, add to unqualified array
+            
+            except ValueError as e:
+                # Invalid input for GPA will be reported via email to EC.
+                invalidApps.append([e.args[0], data[rownum], rownum+2])
+
+    # Export records to JSON file.
     with open('data.json', 'w') as f:
-        for rownum in range(len(data)):
-            if data[rownum]["Current GSU GPA"] > 2.0 and rownum["Approved?"] == "":
-                records.append((data[rownum], rownum))
-                json.dump(data, f, indent=4)
-    # for row in sheet:
-    #     print(row)
-    # data = extract_sheet_data()
+        json.dump({"qualApps": qualApps, "unqualApps": unqualApps, "invalidApps": invalidApps}, f, indent=4)
     
     # Send emails to each applicant
-    # sendEmails(email_addresses)
+    send_emails(qualApps, invalidApps, unqualApps)
+
 
 if __name__ == '__main__':
     # Load email addresses from file
